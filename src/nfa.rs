@@ -38,7 +38,7 @@
 // [1] - http://swtch.com/~rsc/regex/regex3.html
 
 use input::{Input, InputAt, CharInput};
-use program::Program;
+use program::{Program, Dispatch, dispatch, InstIdx};
 use re::CaptureIdxs;
 
 /// An NFA simulation matching engine.
@@ -46,6 +46,90 @@ use re::CaptureIdxs;
 pub struct Nfa<'r, 't> {
     prog: &'r Program,
     input: CharInput<'t>,
+}
+
+struct Step<'a, 'r: 'a, 't: 'a>{
+    nfa: &'a Nfa<'r, 't>,
+    nlist: &'a mut Threads,
+    caps: &'a mut [Option<usize>],
+    thread_caps: &'a mut [Option<usize>],
+    at_next: InputAt
+}
+
+impl <'a, 'r, 't>Dispatch for Step<'a, 'r, 't> {
+    type Input = CharInput<'t>;
+    type Result = bool;
+
+    fn input(&self) -> &Self::Input {
+        &self.nfa.input
+    }
+
+    fn on_match(&mut self) -> bool {
+        for (slot, val) in self.caps.iter_mut().zip(self.thread_caps.iter()) {
+            *slot = *val;
+        }
+        true
+    }
+
+    fn advance(&mut self, x: InstIdx) -> bool {
+        self.nfa.add(self.nlist, self.thread_caps, x, self.at_next);
+        false
+    }
+
+    fn save(&mut self, _: InstIdx, _: usize) -> bool {false}
+    fn jump(&mut self, _: InstIdx) -> bool {false}
+    fn fail(&mut self) -> bool {false}
+    fn split(&mut self, _: InstIdx, _: InstIdx) -> bool {false}
+}
+
+struct Add<'a, 'r: 'a, 't: 'a>{
+    nfa: &'a Nfa<'r, 't>,
+    nlist: &'a mut Threads,
+    thread_caps: &'a mut [Option<usize>],
+    at: InputAt,
+    ti: usize
+}
+
+impl <'a, 'r, 't>Dispatch for Add<'a, 'r, 't> {
+    type Input = CharInput<'t>;
+    type Result = ();
+
+    fn input(&self) -> &Self::Input {
+        &self.nfa.input
+    }
+
+    fn advance(&mut self, _: InstIdx) {
+        self.on_match();
+    }
+
+    fn on_match(&mut self) {
+        let mut t = &mut self.nlist.thread(self.ti);
+        for (slot, val) in t.caps.iter_mut().zip(self.thread_caps.iter()) {
+            *slot = *val;
+        }
+    }
+
+    fn split(&mut self, x: InstIdx, y: InstIdx) {
+        self.nfa.add(self.nlist, self.thread_caps, x, self.at);
+        self.nfa.add(self.nlist, self.thread_caps, y, self.at);
+    }
+
+    fn jump(&mut self, to: InstIdx) {
+        self.nfa.add(self.nlist, self.thread_caps, to, self.at);
+    }
+
+    fn save(&mut self, x: InstIdx, slot: usize) {
+        if slot >= self.thread_caps.len() {
+            self.nfa.add(self.nlist, self.thread_caps, x, self.at);
+        } else {
+            let old = self.thread_caps[slot];
+            self.thread_caps[slot] = Some(self.at.pos());
+            self.nfa.add(self.nlist, self.thread_caps, x, self.at);
+            self.thread_caps[slot] = old;
+        }
+    }
+
+    fn fail(&mut self) {}
 }
 
 impl<'r, 't> Nfa<'r, 't> {
@@ -78,7 +162,7 @@ impl<'r, 't> Nfa<'r, 't> {
     ) -> bool {
         let mut matched = false;
         q.clist.empty(); q.nlist.empty();
-'LOOP:  loop {
+        loop {
             if q.clist.size == 0 {
                 // Three ways to bail out when our current set of threads is
                 // empty.
@@ -115,15 +199,23 @@ impl<'r, 't> Nfa<'r, 't> {
             // we can to look at the current character, so we advance the
             // input.
             let at_next = self.input.at(at.next_pos());
+
             for i in 0..q.clist.size {
                 let pc = q.clist.pc(i);
-                let tcaps = q.clist.caps(i);
-                if self.step(&mut q.nlist, caps, tcaps, pc, at, at_next) {
+                let mut step_state = Step {
+                    nfa: self,
+                    nlist: &mut q.nlist,
+                    caps: caps,
+                    thread_caps: q.clist.caps(i),
+                    at_next: at_next
+                };
+                let b = dispatch(&self.prog.insts, &mut step_state, at, pc);
+                if b {
                     matched = true;
-                    if caps.len() == 0 {
+                    if step_state.caps.len() == 0 {
                         // If we only care if a match occurs (not its
                         // position), then we can quit right now.
-                        break 'LOOP;
+                        return true;
                     }
                     // We don't need to check the rest of the threads in this
                     // set because we've matched something ("leftmost-first").
@@ -142,39 +234,6 @@ impl<'r, 't> Nfa<'r, 't> {
         matched
     }
 
-    fn step(
-        &self,
-        nlist: &mut Threads,
-        caps: &mut [Option<usize>],
-        thread_caps: &mut [Option<usize>],
-        pc: usize,
-        at: InputAt,
-        at_next: InputAt,
-    ) -> bool {
-        use program::Inst::*;
-        match self.prog.insts[pc] {
-            Match => {
-                for (slot, val) in caps.iter_mut().zip(thread_caps.iter()) {
-                    *slot = *val;
-                }
-                true
-            }
-            Char(c) => {
-                if c == at.char() {
-                    self.add(nlist, thread_caps, pc+1, at_next);
-                }
-                false
-            }
-            Ranges(ref inst) => {
-                if inst.matches(at.char()) {
-                    self.add(nlist, thread_caps, pc+1, at_next);
-                }
-                false
-            }
-            EmptyLook(_) | Save(_) | Jump(_) | Split(_, _) => false,
-        }
-    }
-
     fn add(
         &self,
         nlist: &mut Threads,
@@ -182,43 +241,18 @@ impl<'r, 't> Nfa<'r, 't> {
         pc: usize,
         at: InputAt,
     ) {
-        use program::Inst::*;
-
         if nlist.contains(pc) {
             return
         }
         let ti = nlist.add(pc);
-        match self.prog.insts[pc] {
-            EmptyLook(ref inst) => {
-                let prev = self.input.previous_at(at.pos());
-                if inst.matches(prev.char(), at.char()) {
-                    self.add(nlist, thread_caps, pc+1, at);
-                }
-            }
-            Save(slot) => {
-                if slot >= thread_caps.len() {
-                    self.add(nlist, thread_caps, pc+1, at);
-                } else {
-                    let old = thread_caps[slot];
-                    thread_caps[slot] = Some(at.pos());
-                    self.add(nlist, thread_caps, pc+1, at);
-                    thread_caps[slot] = old;
-                }
-            }
-            Jump(to) => {
-                self.add(nlist, thread_caps, to, at)
-            }
-            Split(x, y) => {
-                self.add(nlist, thread_caps, x, at);
-                self.add(nlist, thread_caps, y, at);
-            }
-            Match | Char(_) | Ranges(_) => {
-                let mut t = &mut nlist.thread(ti);
-                for (slot, val) in t.caps.iter_mut().zip(thread_caps.iter()) {
-                    *slot = *val;
-                }
-            }
-        }
+        let mut add_state = Add {
+            nfa: self,
+            nlist: nlist,
+            thread_caps: thread_caps,
+            at: at,
+            ti: ti
+        };
+        dispatch(&self.prog.insts, &mut add_state, at, pc)
     }
 }
 

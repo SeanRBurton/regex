@@ -16,6 +16,7 @@ use Error;
 use backtrack::{Backtrack, BackMachine};
 use char::Char;
 use compile::Compiler;
+use input::{Input, InputAt};
 use nfa::{Nfa, NfaThreads};
 use pool::Pool;
 use prefix::Prefix;
@@ -40,12 +41,23 @@ pub enum Inst {
     Jump(InstIdx),
     /// Match either instruction, preferring the first.
     Split(InstIdx, InstIdx),
-    /// A zero-width instruction. When this instruction matches, the input
-    /// is not advanced.
-    EmptyLook(LookInst),
-    /// Match a single possibly case insensitive character.
+    /// Match the start of a line.
+    StartLine,
+    /// Match the end of a line.
+    EndLine,
+    /// Match the start of the text.
+    StartText,
+    /// Match the end of the text.
+    EndText,
+    /// Match a Word character on one side and non-word character on the other.
+    WordBoundary,
+    /// The opposite of WordBoundary.
+    NotWordBoundary,
+    /// Match a single possibly case-insensitive character
+    /// and advance the input.
     Char(char),
-    /// Match one or more possibly case insensitive character ranges.
+    /// Match one or more possibly case-insensitive character ranges
+    /// and advance the input.
     Ranges(CharRanges),
 }
 
@@ -54,23 +66,6 @@ pub enum Inst {
 pub struct CharRanges {
     /// Sorted sequence of non-overlapping ranges.
     pub ranges: Vec<(char, char)>,
-}
-
-/// The set of zero-width match instructions.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum LookInst {
-    /// Start of line or input.
-    StartLine,
-    /// End of line or input.
-    EndLine,
-    /// Start of input.
-    StartText,
-    /// End of input.
-    EndText,
-    /// Word character on one side and non-word character on other.
-    WordBoundary,
-    /// Word character on both sides or non-word character on both sides.
-    NotWordBoundary,
 }
 
 impl CharRanges {
@@ -117,24 +112,81 @@ impl CharRanges {
     }
 }
 
-impl LookInst {
-    /// Tests whether the pair of characters matches this zero-width
-    /// instruction.
-    pub fn matches(&self, c1: Char, c2: Char) -> bool {
-        use self::LookInst::*;
-        match *self {
-            StartLine => c1.is_none() || c1 == '\n',
-            EndLine => c2.is_none() || c2 == '\n',
-            StartText => c1.is_none(),
-            EndText => c2.is_none(),
-            ref wbty => {
-                let (w1, w2) = (c1.is_word_char(), c2.is_word_char());
-                (*wbty == WordBoundary && w1 ^ w2)
-                || (*wbty == NotWordBoundary && !(w1 ^ w2))
+/// A trait with allows the implementor to dispatch on the current instruction
+/// The program counter must be tracked externally, if necessary.
+pub trait Dispatch {
+
+    /// The type of self.input()
+    type Input: Input;
+
+    /// The return type of the `dispatch` function.
+    type Result;
+
+    /// Returns the input character stream.
+    fn input(&self) -> &Self::Input;
+
+    /// A match has occurred.
+    fn on_match(&mut self) -> Self::Result;
+
+    /// Save the current location in the input into the given capture location.
+    fn save(&mut self, x: InstIdx, i: usize) -> Self::Result;
+
+    /// Advance the input by a single character.
+    fn advance(&mut self, x: InstIdx) -> Self::Result;
+
+    /// Jump to the instruction given.
+    fn jump(&mut self, x: InstIdx) -> Self::Result;
+
+    /// Abandon the current thread of execution.
+    fn fail(&mut self) -> Self::Result;
+
+    /// Match either instruction, preferring the first.
+    fn split(&mut self, x: InstIdx, y: InstIdx) -> Self::Result;
+}
+
+#[inline(always)]
+pub fn dispatch<T: Dispatch>(insts: &Vec<Inst>, engine: &mut T,
+                             at: InputAt, pc: usize) -> T::Result {
+    macro_rules! prev {() => {engine.input().previous_at(at.pos()).char()}}
+    macro_rules! try_do {
+        ($b: expr, $f: ident) => {
+            if $b {
+                engine.$f(pc + 1)
+            } else {
+                engine.fail()
             }
         }
     }
+    macro_rules! try_skip {($b: expr) => {try_do!($b, jump)}}
+    macro_rules! try_advance {($b: expr) => {try_do!($b, advance)}}
+    match insts[pc] {
+        Inst::Match => engine.on_match(),
+        Inst::Save(slot) => engine.save(pc + 1, slot),
+        Inst::Jump(to) => engine.jump(to),
+        Inst::Split(x, y) => engine.split(x, y),
+        Inst::StartLine => try_skip!({
+            let p = prev!();
+            p.is_none() || p == '\n'
+        }),
+        Inst::EndLine => {
+            let c = at.char();
+            try_skip!(c.is_none() || c == '\n')
+        }
+        Inst::StartText => {
+            try_skip!(prev!().is_none())
+        }
+        Inst::EndText => try_skip!(at.char().is_none()),
+        Inst::WordBoundary => {
+            try_skip!(prev!().is_word_char() != at.char().is_word_char())
+        }
+        Inst::NotWordBoundary => {
+            try_skip!(prev!().is_word_char() == at.char().is_word_char())
+        }
+        Inst::Char(c) => try_advance!(at.char() == c),
+        Inst::Ranges(ref r) => try_advance!(r.matches(at.char()))
+    }
 }
+
 
 /// The matching engines offered by this regex implementation.
 ///
@@ -212,11 +264,11 @@ impl Program {
 
         prog.find_prefixes();
         prog.anchored_begin = match prog.insts[1] {
-            Inst::EmptyLook(LookInst::StartText) => true,
+            Inst::StartText => true,
             _ => false,
         };
         prog.anchored_end = match prog.insts[prog.insts.len() - 3] {
-            Inst::EmptyLook(LookInst::EndText) => true,
+            Inst::EndText => true,
             _ => false,
         };
         Ok(prog)

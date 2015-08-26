@@ -34,7 +34,7 @@ use rustc::plugin::Registry;
 
 use regex::Regex;
 use regex::internal::{
-    Inst, LookInst, CharRanges, Program, Dynamic, Native,
+    Inst, CharRanges, Program, Dynamic, Native,
 };
 
 /// For the `regex!` syntax extension. Do not use.
@@ -326,7 +326,7 @@ fn exec<'t>(
         let arms = self.prog.insts.iter().enumerate().map(|(pc, inst)| {
             let nextpc = pc + 1;
             let body = match *inst {
-                Inst::EmptyLook(LookInst::StartLine) => {
+                Inst::StartLine => {
                     quote_expr!(self.cx, {
                         let prev = self.input.previous_at(at.pos());
                         if prev.char().is_none() || prev.char() == '\n' {
@@ -334,14 +334,14 @@ fn exec<'t>(
                         }
                     })
                 }
-                Inst::EmptyLook(LookInst::EndLine) => {
+                Inst::EndLine => {
                     quote_expr!(self.cx, {
                         if at.char().is_none() || at.char() == '\n' {
                             self.add(nlist, thread_caps, $nextpc, at);
                         }
                     })
                 }
-                Inst::EmptyLook(LookInst::StartText) => {
+                Inst::StartText => {
                     quote_expr!(self.cx, {
                         let prev = self.input.previous_at(at.pos());
                         if prev.char().is_none() {
@@ -349,24 +349,27 @@ fn exec<'t>(
                         }
                     })
                 }
-                Inst::EmptyLook(LookInst::EndText) => {
+                Inst::EndText => {
                     quote_expr!(self.cx, {
                         if at.char().is_none() {
                             self.add(nlist, thread_caps, $nextpc, at);
                         }
                     })
                 }
-                Inst::EmptyLook(ref wbty) => {
-                    let m = if *wbty == LookInst::WordBoundary {
-                        quote_expr!(self.cx, { w1 ^ w2 })
-                    } else {
-                        quote_expr!(self.cx, { !(w1 ^ w2) })
-                    };
+                Inst::WordBoundary => {
                     quote_expr!(self.cx, {
                         let prev = self.input.previous_at(at.pos());
-                        let w1 = prev.char().is_word_char();
-                        let w2 = at.char().is_word_char();
-                        if $m {
+                        if prev.char().is_word_char() !=
+                           at.char().is_word_char() {
+                            self.add(nlist, thread_caps, $nextpc, at);
+                        }
+                    })
+                }
+                Inst::NotWordBoundary => {
+                    quote_expr!(self.cx, {
+                        let prev = self.input.previous_at(at.pos());
+                        if prev.char().is_word_char() ==
+                           at.char().is_word_char() {
                             self.add(nlist, thread_caps, $nextpc, at);
                         }
                     })
