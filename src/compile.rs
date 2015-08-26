@@ -48,7 +48,6 @@ impl Compiler {
 
     fn c(&mut self, ast: Expr) -> Result<(), Error> {
         use program::Inst::*;
-        use program::LookInst::*;
 
         match ast {
             Expr::Empty => {},
@@ -72,12 +71,12 @@ impl Compiler {
                     self.push(Ranges(CharRanges::from_class(cls)));
                 }
             }
-            Expr::StartLine => self.push(EmptyLook(StartLine)),
-            Expr::EndLine => self.push(EmptyLook(EndLine)),
-            Expr::StartText => self.push(EmptyLook(StartText)),
-            Expr::EndText => self.push(EmptyLook(EndText)),
-            Expr::WordBoundary => self.push(EmptyLook(WordBoundary)),
-            Expr::NotWordBoundary => self.push(EmptyLook(NotWordBoundary)),
+            Expr::StartLine => self.push(StartLine),
+            Expr::EndLine => self.push(EndLine),
+            Expr::StartText => self.push(StartText),
+            Expr::EndText => self.push(EndText),
+            Expr::WordBoundary => self.push(WordBoundary),
+            Expr::NotWordBoundary => self.push(NotWordBoundary),
             Expr::Group { e, i: None, name: None } => try!(self.c(*e)),
             Expr::Group { e, i, name } => {
                 let i = i.expect("capture index");

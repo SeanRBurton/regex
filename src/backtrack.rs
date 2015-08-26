@@ -24,7 +24,7 @@
 // as fast as the full NFA simulation.
 
 use input::{Input, InputAt, CharInput};
-use program::{Inst, InstIdx, Program};
+use program::{dispatch, Dispatch, Inst, InstIdx, Program};
 use re::CaptureIdxs;
 
 type Bits = u32;
@@ -66,6 +66,62 @@ impl BackMachine {
             visited: vec![],
         }
     }
+}
+
+struct Step<'a, 'r: 'a, 't: 'a, 'c: 'a> {
+    backtrack: &'a mut Backtrack<'r, 't, 'c>,
+    at: InputAt,
+    pc: InstIdx
+}
+
+impl <'a, 'r, 't, 'c>Dispatch for Step<'a, 'r, 't, 'c> {
+
+    type Out = Option<bool>;
+    type In = CharInput<'t>;
+
+    #[inline(always)]
+    fn input(&self) -> &CharInput<'t> {
+        &self.backtrack.input
+    }
+
+    #[inline(always)]
+    fn has_matched(&mut self) -> Option<bool> {
+        Some(true)
+    }
+
+    #[inline(always)]
+    fn split(&mut self, x: InstIdx, y: InstIdx) -> Option<bool> {
+        self.backtrack.push(y, self.at);
+        self.pc = x; None
+    }
+
+    #[inline(always)]
+    fn save(&mut self, x: InstIdx, slot: usize) -> Option<bool> {
+        if slot < self.backtrack.caps.len() {
+            let old_pos = self.backtrack.caps[slot];
+            self.backtrack.push_save_restore(slot, old_pos);
+            self.backtrack.caps[slot] = Some(self.at.pos());
+        }
+        self.pc = x; None
+    }
+
+    #[inline(always)]
+    fn advance(&mut self) -> Option<bool> {
+        self.at = self.input().at(self.at.next_pos());
+        self.pc += 1;
+        None
+    }
+
+    #[inline(always)]
+    fn jump(&mut self, x: InstIdx) -> Option<bool> {
+        self.pc = x; None
+    }
+
+    #[inline(always)]
+    fn fail(&mut self) -> Option<bool> {
+        Some(false)
+    }
+
 }
 
 /// A job is an explicit unit of stack space in the backtracking engine.
@@ -190,59 +246,29 @@ impl<'r, 't, 'c> Backtrack<'r, 't, 'c> {
         false
     }
 
-    fn step(&mut self, mut pc: InstIdx, mut at: InputAt) -> bool {
-        use program::Inst::*;
+    fn step(&mut self, pc: InstIdx, at: InputAt) -> bool {
+        let mut step = Step {
+            backtrack: self,
+            at: at,
+            pc: pc
+        };
         loop {
             // This loop is an optimization to avoid constantly pushing/popping
             // from the stack. Namely, if we're pushing a job only to run it
             // next, avoid the push and just mutate `pc` (and possibly `at`)
             // in place.
-            match self.prog.insts[pc] {
-                Match => return true,
-                Save(slot) => {
-                    if slot < self.caps.len() {
-                        // If this path doesn't work out, then we save the old
-                        // capture index (if one exists) in an alternate
-                        // job. If the next path fails, then the alternate
-                        // job is popped and the old capture index is restored.
-                        let old_pos = self.caps[slot];
-                        self.push_save_restore(slot, old_pos);
-                        self.caps[slot] = Some(at.pos());
-                    }
-                    pc += 1;
-                }
-                Jump(pc2) => pc = pc2,
-                Split(x, y) => {
-                    self.push(y, at);
-                    pc = x;
-                }
-                EmptyLook(ref inst) => {
-                    let prev = self.input.previous_at(at.pos());
-                    if inst.matches(prev.char(), at.char()) {
-                        pc += 1;
-                    } else {
+            let at2 = step.at;
+            let pc2 = step.pc;
+            let x = dispatch(&self.prog.insts, &mut step, at2, pc2);
+            match x {
+                None => {
+                    let at2 = step.at;
+                    let pc2 = step.pc;
+                    if step.backtrack.has_visited(pc2, at2) {
                         return false;
                     }
                 }
-                Char(c) => {
-                    if c == at.char() {
-                        pc += 1;
-                        at = self.input.at(at.next_pos());
-                    } else {
-                        return false;
-                    }
-                }
-                Ranges(ref inst) => {
-                    if inst.matches(at.char()) {
-                        pc += 1;
-                        at = self.input.at(at.next_pos());
-                    } else {
-                        return false;
-                    }
-                }
-            }
-            if self.has_visited(pc, at) {
-                return false;
+                Some(b) => return b
             }
         }
     }

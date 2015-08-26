@@ -38,7 +38,7 @@
 // [1] - http://swtch.com/~rsc/regex/regex3.html
 
 use input::{Input, InputAt, CharInput};
-use program::Program;
+use program::{Program};
 use re::CaptureIdxs;
 
 /// An NFA simulation matching engine.
@@ -47,6 +47,92 @@ pub struct Nfa<'r, 't> {
     prog: &'r Program,
     input: CharInput<'t>,
 }
+
+//struct Step<'a, 'r: 'a, 't: 'a>{
+//    nfa: &'a Nfa<'r, 't>,
+//    nlist: &'a mut Threads,
+//    caps: &'a mut [Option<usize>],
+//    thread_caps: &'a mut [Option<usize>],
+//    pc: usize,
+//    at_next: InputAt
+//}
+//
+//impl <'a, 'r, 't>Dispatch for Step<'a, 'r, 't> {
+//    type Out = bool;
+//    type In  = CharInput<'t>;
+//
+//    fn input(&self) -> &CharInput<'t> {
+//        &self.nfa.input
+//    }
+//
+//    fn has_matched(&mut self) -> bool {
+//        for (slot, val) in self.caps.iter_mut().zip(self.thread_caps.iter()) {
+//            *slot = *val;
+//        }
+//        true
+//    }
+//
+//    fn advance(&mut self) {
+//        self.nfa.add(self.nlist, self.thread_caps, self.pc+1, self.at_next)
+//    }
+//
+//    fn save(&mut self, _: InstIdx, _: usize) -> bool {false}
+//    fn jump(&mut self, _: InstIdx) -> bool {false}
+//    fn fail(&mut self) -> bool {false}
+//    fn split(&mut self, _: InstIdx, _: InstIdx) -> bool {false}
+//}
+
+//struct Add<'a, 'r: 'a, 't: 'a>{
+//    nfa: &'a Nfa<'r, 't>,
+//    nlist: &'a mut Threads,
+//    thread_caps: &'a mut [Option<usize>],
+//    at: InputAt,
+//    ti: usize
+//}
+//
+//impl <'a, 'r, 't>Dispatch for Add<'a, 'r, 't> {
+//    type Out = ();
+//    type In = CharInput<'t>;
+//
+//    fn input(&self) -> &CharInput<'t> {
+//        &self.nfa.input
+//    }
+//
+//    fn advance(&mut self) {
+//        let mut t = &mut self.nlist.thread(self.ti);
+//        for (slot, val) in t.caps.iter_mut().zip(self.thread_caps.iter()) {
+//            *slot = *val;
+//        }
+//    }
+//
+//    fn has_matched(&mut self) {
+//        self.advance();
+//    }
+//
+//    fn split(&mut self, x: InstIdx, y: InstIdx) {
+//        self.nfa.add(self.nlist, self.thread_caps, x, self.at);
+//        self.nfa.add(self.nlist, self.thread_caps, y, self.at);
+//    }
+//
+//    fn jump(&mut self, to: InstIdx) {
+//        self.nfa.add(self.nlist, self.thread_caps, to, self.at);
+//    }
+//
+//    fn save(&mut self, x: InstIdx, slot: usize) {
+//        if slot >= self.thread_caps.len() {
+//            self.nfa.add(self.nlist, self.thread_caps, x, self.at);
+//        } else {
+//            let old = self.thread_caps[slot];
+//            self.thread_caps[slot] = Some(self.at.pos());
+//            self.nfa.add(self.nlist, self.thread_caps, x, self.at);
+//            self.thread_caps[slot] = old;
+//        }
+//    }
+//
+//    fn fail(&mut self) {
+//    }
+//
+//}
 
 impl<'r, 't> Nfa<'r, 't> {
     /// Execute the NFA matching engine.
@@ -142,6 +228,28 @@ impl<'r, 't> Nfa<'r, 't> {
         matched
     }
 
+//    fn step(
+//        &self,
+//        nlist: &mut Threads,
+//        caps: &mut [Option<usize>],
+//        thread_caps: &mut [Option<usize>],
+//        pc: usize,
+//        at: InputAt,
+//        at_next: InputAt,
+//    ) -> bool {
+//        let mut step_state = Step {
+//            nfa: self,
+//            nlist: nlist,
+//            caps: caps,
+//            thread_caps: thread_caps,
+//            pc: pc,
+//            at_next: at_next
+//        };
+//        dispatch(&self.prog.insts, &mut step_state, at, pc)
+//    }
+//
+
+
     fn step(
         &self,
         nlist: &mut Threads,
@@ -171,9 +279,26 @@ impl<'r, 't> Nfa<'r, 't> {
                 }
                 false
             }
-            EmptyLook(_) | Save(_) | Jump(_) | Split(_, _) => false,
+            _ => false,
+            //EmptyLook(_) | Save(_) | Jump(_) | Split(_, _) => false,
         }
     }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
     fn add(
         &self,
@@ -189,12 +314,6 @@ impl<'r, 't> Nfa<'r, 't> {
         }
         let ti = nlist.add(pc);
         match self.prog.insts[pc] {
-            EmptyLook(ref inst) => {
-                let prev = self.input.previous_at(at.pos());
-                if inst.matches(prev.char(), at.char()) {
-                    self.add(nlist, thread_caps, pc+1, at);
-                }
-            }
             Save(slot) => {
                 if slot >= thread_caps.len() {
                     self.add(nlist, thread_caps, pc+1, at);
@@ -218,8 +337,35 @@ impl<'r, 't> Nfa<'r, 't> {
                     *slot = *val;
                 }
             }
+            ref inst => {
+                let prev = self.input.previous_at(at.pos());
+                if inst.matches(prev.char(), at.char()) {
+                    self.add(nlist, thread_caps, pc+1, at);
+                }
+            }
         }
     }
+
+    //fn add2(
+    //    &self,
+    //    nlist: &mut Threads,
+    //    thread_caps: &mut [Option<usize>],
+    //    pc: usize,
+    //    at: InputAt,
+    //) {
+    //    if nlist.contains(pc) {
+    //        return
+    //    }
+    //    let ti = nlist.add(pc);
+    //    let mut add_state = Add {
+    //        nfa: self,
+    //        nlist: nlist,
+    //        thread_caps: thread_caps,
+    //        at: at,
+    //        ti: ti
+    //    };
+    //    dispatch(&self.prog.insts, &mut add_state, at, pc)
+    //}
 }
 
 /// Shared cached state between multiple invocations of a NFA engine
