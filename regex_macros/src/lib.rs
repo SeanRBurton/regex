@@ -323,6 +323,18 @@ fn exec<'t>(
     // Generates code for the `add` method, which is responsible for adding
     // zero-width states to the next queue of states to visit.
     fn add_insts(&self) -> P<ast::Expr> {
+        macro_rules! word_boundary {
+            ($nextpc:expr, $e:expr) => {{
+                quote_expr!(self.cx, {
+                    let prev = self.input.previous_at(at.pos());
+                    let w1 = prev.char().is_word_char();
+                    let w2 = at.char().is_word_char();
+                    if $e {
+                        self.add(nlist, thread_caps, $nextpc, at);
+                    }
+                })
+            }}
+        }
         let arms = self.prog.insts.iter().enumerate().map(|(pc, inst)| {
             let nextpc = pc + 1;
             let body = match *inst {
@@ -356,29 +368,8 @@ fn exec<'t>(
                         }
                     })
                 }
-                Inst::WordBoundary => {
-                    let m = quote_expr!(self.cx, {w1 != w2});
-                    quote_expr!(self.cx, {
-                        let prev = self.input.previous_at(at.pos());
-                        let w1 = prev.char().is_word_char();
-                        let w2 = at.char().is_word_char();
-                        if $m {
-                            self.add(nlist, thread_caps, $nextpc, at);
-                        }
-                    })
-                }
-
-                Inst::NotWordBoundary => {
-                    let m = quote_expr!(self.cx, {w1 == w2});
-                    quote_expr!(self.cx, {
-                        let prev = self.input.previous_at(at.pos());
-                        let w1 = prev.char().is_word_char();
-                        let w2 = at.char().is_word_char();
-                        if $m {
-                            self.add(nlist, thread_caps, $nextpc, at);
-                        }
-                    })
-                }
+                Inst::WordBoundary => word_boundary!(nextpc, w1 != w2),
+                Inst::NotWordBoundary => word_boundary!(nextpc, w1 == w2),
                 Inst::Save(slot) => quote_expr!(self.cx, {
                     if $slot >= self.ncaps {
                         self.add(nlist, thread_caps, $nextpc, at);
