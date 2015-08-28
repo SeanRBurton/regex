@@ -16,7 +16,7 @@ use Error;
 use backtrack::{Backtrack, BackMachine};
 use char::Char;
 use compile::Compiler;
-use nfa::{Nfa, NfaThreads};
+use nfa::{Deterministic, NonDeterministic, Nfa, NfaThreads};
 use pool::Pool;
 use prefix::Prefix;
 use re::CaptureIdxs;
@@ -179,10 +179,21 @@ pub struct Program {
     /// The type of matching engine to use.
     /// When `None` (the default), pick an engine automatically.
     pub engine: Option<MatchEngine>,
+    /// If the regex is deterministic we can use faster regex matching
+    pub deterministic: bool,
     /// Cached NFA threads.
     pub nfa_threads: Pool<NfaThreads>,
     /// Cached backtracking memory.
     pub backtrack: Pool<BackMachine>,
+}
+
+fn is_deterministic(insts: &Vec<Inst>) -> bool {
+    insts.iter().all(|inst|
+        match *inst {
+            Inst::Split(_, _) => false,
+            _ => true
+        }
+    )
 }
 
 impl Program {
@@ -195,7 +206,8 @@ impl Program {
         let expr = try!(syntax::Expr::parse(re));
         let (insts, cap_names) = try!(Compiler::new(size_limit).compile(expr));
         let (insts_len, ncaps) = (insts.len(), num_captures(&insts));
-        let create_threads = move || NfaThreads::new(insts_len, ncaps);
+        let deterministic = is_deterministic(&insts);
+        let create_threads = move || NfaThreads::new(insts_len, if deterministic {0} else {ncaps});
         let create_backtrack = move || BackMachine::new();
         let mut prog = Program {
             original: re.into(),
@@ -206,6 +218,7 @@ impl Program {
             anchored_begin: false,
             anchored_end: false,
             engine: engine,
+            deterministic: deterministic,
             nfa_threads: Pool::new(Box::new(create_threads)),
             backtrack: Pool::new(Box::new(create_backtrack)),
         };
@@ -231,7 +244,13 @@ impl Program {
     ) -> bool {
         match self.choose_engine(caps.len(), text) {
             MatchEngine::Backtrack => Backtrack::exec(self, caps, text, start),
-            MatchEngine::Nfa => Nfa::exec(self, caps, text, start),
+            MatchEngine::Nfa => {
+                if self.deterministic {
+                    Nfa::<Deterministic>::exec(self, caps, text, start)
+                } else {
+                    Nfa::<NonDeterministic>::exec(self, caps, text, start)
+                }
+            }
             MatchEngine::Literals => {
                 match self.prefixes.find(&text[start..]) {
                     None => false,
@@ -422,7 +441,9 @@ impl Program {
 impl Clone for Program {
     fn clone(&self) -> Program {
         let (insts_len, ncaps) = (self.insts.len(), self.num_captures());
-        let create_threads = move || NfaThreads::new(insts_len, ncaps);
+        let x = if self.deterministic {0} else {ncaps};
+        let create_threads =
+            move || NfaThreads::new(insts_len, x);
         let create_backtrack = move || BackMachine::new();
         Program {
             original: self.original.clone(),
@@ -433,6 +454,7 @@ impl Clone for Program {
             anchored_begin: self.anchored_begin,
             anchored_end: self.anchored_end,
             engine: self.engine,
+            deterministic: self.deterministic,
             nfa_threads: Pool::new(Box::new(create_threads)),
             backtrack: Pool::new(Box::new(create_backtrack)),
         }
@@ -547,3 +569,4 @@ mod tests {
                    vec!["a", "b", "c", "d"]);
     }
 }
+

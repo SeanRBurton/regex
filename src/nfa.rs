@@ -37,18 +37,36 @@
 //
 // [1] - http://swtch.com/~rsc/regex/regex3.html
 
+use std::marker::PhantomData;
+
 use input::{Input, InputAt, CharInput};
 use program::Program;
 use re::CaptureIdxs;
 
 /// An NFA simulation matching engine.
 #[derive(Debug)]
-pub struct Nfa<'r, 't> {
+pub struct Nfa<'r, 't, T> {
     prog: &'r Program,
     input: CharInput<'t>,
+    phantom: PhantomData<T>
 }
 
-impl<'r, 't> Nfa<'r, 't> {
+trait IsDeterministic {
+    fn is_deterministic() -> bool;
+}
+
+pub enum Deterministic {}
+pub enum NonDeterministic {}
+
+impl IsDeterministic for Deterministic {
+    fn is_deterministic() -> bool {true}
+}
+
+impl IsDeterministic for NonDeterministic {
+    fn is_deterministic() -> bool {false}
+}
+
+impl<'r, 't, T: IsDeterministic> Nfa<'r, 't, T> {
     /// Execute the NFA matching engine.
     ///
     /// If there's a match, `exec` returns `true` and populates the given
@@ -62,9 +80,10 @@ impl<'r, 't> Nfa<'r, 't> {
         let mut q = prog.nfa_threads.get();
         let input = CharInput::new(text);
         let at = input.at(start);
-        let matched = Nfa {
+        let matched = Nfa::<T> {
             prog: prog,
             input: input,
+            phantom: PhantomData
         }.exec_(&mut q, &mut caps, at);
         prog.nfa_threads.put(q);
         matched
@@ -154,20 +173,30 @@ impl<'r, 't> Nfa<'r, 't> {
         use program::Inst::*;
         match self.prog.insts[pc] {
             Match => {
-                for (slot, val) in caps.iter_mut().zip(thread_caps.iter()) {
-                    *slot = *val;
+                if !T::is_deterministic() {
+                    for (slot, val) in caps.iter_mut().zip(thread_caps.iter()) {
+                        *slot = *val;
+                    }
                 }
                 true
             }
             Char(c) => {
                 if c == at.char() {
-                    self.add(nlist, thread_caps, pc+1, at_next);
+                    self.add(nlist, if T::is_deterministic() {caps} else {thread_caps}, pc+1, at_next);
+                } else if T::is_deterministic() {
+                    for x in caps.iter_mut() {
+                        *x = None;
+                    }
                 }
                 false
             }
             Ranges(ref inst) => {
                 if inst.matches(at.char()) {
-                    self.add(nlist, thread_caps, pc+1, at_next);
+                    self.add(nlist, if T::is_deterministic() {caps} else {thread_caps}, pc+1, at_next);
+                } else if T::is_deterministic() {
+                    for x in caps.iter_mut() {
+                        *x = None;
+                    }
                 }
                 false
             }
@@ -202,7 +231,9 @@ impl<'r, 't> Nfa<'r, 't> {
                     let old = thread_caps[slot];
                     thread_caps[slot] = Some(at.pos());
                     self.add(nlist, thread_caps, pc+1, at);
-                    thread_caps[slot] = old;
+                    if !T::is_deterministic() {
+                        thread_caps[slot] = old;
+                    }
                 }
             }
             Jump(to) => {
@@ -213,9 +244,11 @@ impl<'r, 't> Nfa<'r, 't> {
                 self.add(nlist, thread_caps, y, at);
             }
             Match | Char(_) | Ranges(_) => {
-                let mut t = nlist.caps(ti);
-                for (slot, val) in t.iter_mut().zip(thread_caps.iter()) {
-                    *slot = *val;
+                if !T::is_deterministic() {
+                    let mut t = nlist.caps(ti);
+                    for (slot, val) in t.iter_mut().zip(thread_caps.iter()) {
+                        *slot = *val;
+                    }
                 }
             }
         }
