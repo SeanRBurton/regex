@@ -449,6 +449,8 @@
 #![deny(missing_docs)]
 #![cfg_attr(test, deny(warnings))]
 #![cfg_attr(feature = "pattern", feature(pattern))]
+#![cfg_attr(feature = "afl-fuzz", feature(plugin))]
+#![cfg_attr(feature = "afl-fuzz", plugin(afl_plugin))]
 #![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
        html_favicon_url = "https://www.rust-lang.org/favicon.ico",
        html_root_url = "https://doc.rust-lang.org/regex/")]
